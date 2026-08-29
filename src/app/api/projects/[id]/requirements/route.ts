@@ -4,7 +4,6 @@ export const maxDuration = 120;
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { anthropic } from "@/lib/ai";
-import { extractPdfText } from "@/lib/pdf";
 import { requireProjectAccess } from "@/lib/project-access";
 import { rateLimit } from "@/lib/rate-limit";
 import { uploadToBlob, generateSasUrl } from "@/lib/azure-blob";
@@ -116,20 +115,6 @@ async function extractFileText(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  if (ext === "pdf") {
-    return await extractPdfText(buffer);
-  }
-  if (ext === "docx") {
-    try {
-      const mammoth = require("mammoth");
-      const result = await mammoth.extractRawText({ buffer });
-      return result.value;
-    } catch {
-      throw new Error(
-        "Could not read the DOCX file. Ensure it is a valid Word document (not a .doc renamed to .docx). Try re-saving it from Microsoft Word and uploading again."
-      );
-    }
-  }
   if (ext === "xlsx" || ext === "xls") {
     const XLSX = require("xlsx");
     const wb = XLSX.read(buffer, { type: "buffer" });
@@ -141,7 +126,6 @@ async function extractFileText(file: File): Promise<string> {
     return lines.join("\n");
   }
   if (ext === "txt" || ext === "csv") return buffer.toString("utf-8");
-  if (ext === "doc") throw new Error("Old .doc format not supported. Re-save as .docx.");
   throw new Error(`Unsupported file type: .${ext}`);
 }
 

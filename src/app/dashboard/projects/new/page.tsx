@@ -211,7 +211,16 @@ export default function NewProjectPage() {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/parse-requirements", { method: "POST", body: fd });
-      const data = await res.json();
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error(
+          res.status === 504
+            ? "The file took too long to process. Try a smaller document or wait and retry."
+            : `Server error (${res.status}): the request failed. Try again or use a smaller file.`
+        );
+      }
       if (!res.ok) throw new Error(data.error?.message || "Failed to parse file");
       const pf = data.projectFields as Record<string, unknown>;
       setForm((f) => ({

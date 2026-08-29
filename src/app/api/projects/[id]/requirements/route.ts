@@ -11,7 +11,9 @@ import { analyzeDocument, diResultToChunks } from "@/lib/azure-di";
 
 // File types handled by Azure DI (richer extraction)
 const DI_SUPPORTED = new Set(["pdf", "docx", "doc"]);
-const AZURE_DI_ENABLED = !!(process.env.AZURE_DI_KEY && process.env.AZURE_DI_ENDPOINT && process.env.AZURE_STORAGE_CONNECTION_STRING);
+function isAzureDiEnabled() {
+  return !!(process.env.AZURE_DI_KEY && process.env.AZURE_DI_ENDPOINT && process.env.AZURE_STORAGE_CONNECTION_STRING);
+}
 
 // Azure DI handles large files; keep a generous limit for non-DI types.
 // Vercel caps request bodies at 4.5 MB — DI-eligible files go via Blob so
@@ -178,7 +180,7 @@ export async function POST(
   }
 
   const fileExt = file.name.split(".").pop()?.toLowerCase() ?? "";
-  const useDI = AZURE_DI_ENABLED && DI_SUPPORTED.has(fileExt);
+  const useDI = isAzureDiEnabled() && DI_SUPPORTED.has(fileExt);
 
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);

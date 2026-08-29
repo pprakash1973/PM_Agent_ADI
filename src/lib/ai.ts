@@ -13,10 +13,15 @@ import { extractJson } from "@/lib/extract-json";
 // Lazy-initialised Anthropic client — avoids eager module-load so the key is
 // never present in startup error traces or process dumps when it's misconfigured.
 let _anthropic: Anthropic | null = null;
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+}
+
 function getAnthropicClient(): Anthropic {
   if (!_anthropic) {
-    if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
-    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const raw = process.env.ANTHROPIC_API_KEY;
+    if (!raw) throw new Error("ANTHROPIC_API_KEY is not configured");
+    _anthropic = new Anthropic({ apiKey: stripBom(raw) });
   }
   return _anthropic;
 }

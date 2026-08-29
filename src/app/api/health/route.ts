@@ -39,10 +39,12 @@ export async function GET() {
 
 function describe(v: string | undefined) {
   if (!v) return "MISSING";
-  return `set (${v.length} chars)`;
+  const bom = v.charCodeAt(0) === 0xFEFF;
+  return `set (${v.length} chars${bom ? ", BOM!" : ""})`;
 }
 
 function describeConn(v: string | undefined) {
   if (!v) return "MISSING";
-  return `set (${v.length} chars, hasAccountKey=${v.includes("AccountKey=")}, hasAccountName=${v.includes("AccountName=")})`;
+  const bom = v.charCodeAt(0) === 0xFEFF;
+  return `set (${v.length} chars${bom ? ", BOM!" : ""}, hasAccountKey=${v.includes("AccountKey=")}, hasAccountName=${v.includes("AccountName=")})`;
 }

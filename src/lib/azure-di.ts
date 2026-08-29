@@ -10,11 +10,15 @@ export interface DiChunk {
   tokenCount: number;
 }
 
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+}
+
 function getClient() {
-  const endpoint = process.env.AZURE_DI_ENDPOINT;
-  const key = process.env.AZURE_DI_KEY;
-  if (!endpoint || !key) throw new Error("Azure DI credentials not configured");
-  return new DocumentAnalysisClient(endpoint, new AzureKeyCredential(key));
+  const rawEndpoint = process.env.AZURE_DI_ENDPOINT;
+  const rawKey = process.env.AZURE_DI_KEY;
+  if (!rawEndpoint || !rawKey) throw new Error("Azure DI credentials not configured");
+  return new DocumentAnalysisClient(stripBom(rawEndpoint), new AzureKeyCredential(stripBom(rawKey)));
 }
 
 export async function analyzeDocument(sasUrl: string): Promise<string> {

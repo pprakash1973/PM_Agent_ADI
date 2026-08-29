@@ -1,8 +1,13 @@
 import { BlobServiceClient, StorageSharedKeyCredential, generateBlobSASQueryParameters, BlobSASPermissions } from "@azure/storage-blob";
 
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+}
+
 function getConnStr(): string {
-  const s = process.env.AZURE_STORAGE_CONNECTION_STRING;
-  if (!s) throw new Error("AZURE_STORAGE_CONNECTION_STRING is not set");
+  const raw = process.env.AZURE_STORAGE_CONNECTION_STRING;
+  if (!raw) throw new Error("AZURE_STORAGE_CONNECTION_STRING is not set");
+  const s = stripBom(raw);
   if (!s.includes("AccountKey=") && !s.includes("SharedAccessSignature=")) {
     throw new Error(`AZURE_STORAGE_CONNECTION_STRING malformed (len=${s.length})`);
   }

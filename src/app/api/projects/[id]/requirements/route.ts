@@ -7,10 +7,17 @@ import { anthropic } from "@/lib/ai";
 import { extractPdfText } from "@/lib/pdf";
 import { requireProjectAccess } from "@/lib/project-access";
 import { rateLimit } from "@/lib/rate-limit";
+import { uploadToBlob, generateSasUrl } from "@/lib/azure-blob";
+import { analyzeDocument, diResultToChunks } from "@/lib/azure-di";
 
-// Matches the artifact uploader's ceiling. Both PDF and XLSX parsing allocate well
-// beyond the input size, so an unbounded upload is a memory-exhaustion vector.
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+// File types handled by Azure DI (richer extraction)
+const DI_SUPPORTED = new Set(["pdf", "docx", "doc"]);
+const AZURE_DI_ENABLED = !!(process.env.AZURE_DI_KEY && process.env.AZURE_DI_ENDPOINT && process.env.AZURE_STORAGE_CONNECTION_STRING);
+
+// Azure DI handles large files; keep a generous limit for non-DI types.
+// Vercel caps request bodies at 4.5 MB — DI-eligible files go via Blob so
+// this limit only applies to XLSX/TXT/CSV which are processed inline.
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 // Each upload runs a paid extraction call, so bill it to the user like the other
 // LLM-backed routes rather than leaving it unmetered.
@@ -35,9 +42,9 @@ async function computeAndSaveReadiness(projectId: string) {
     select: { docClass: true },
   });
   // Each class counts once (uploading 3 SOWs doesn't triple-count)
-  const seenClasses = new Set(docs.map(d => d.docClass));
+  const seenClasses = new Set(docs.map((d: { docClass: string }) => d.docClass));
   let score = 0;
-  for (const cls of seenClasses) score += DOC_CLASS_POINTS[cls] ?? 5;
+  for (const cls of seenClasses) score += DOC_CLASS_POINTS[cls as string] ?? 5;
   score = Math.min(score, 100);
   const band = evidenceBand(score);
   await prisma.project.update({
@@ -186,6 +193,99 @@ export async function POST(
     );
   }
 
+  const fileExt = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const useDI = AZURE_DI_ENABLED && DI_SUPPORTED.has(fileExt);
+
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  // ── Azure DI path (PDF / DOCX) ────────────────────────────────────────────
+  if (useDI) {
+    // 1. Upload to Azure Blob
+    let blobUrl: string;
+    try {
+      blobUrl = await uploadToBlob((project as any).orgId ?? id, id, `${Date.now()}`, buffer, file.name);
+    } catch (err: any) {
+      return NextResponse.json({ error: `Blob upload failed: ${err.message}` }, { status: 500 });
+    }
+
+    // 2. Save document record with ingestionState "processing"
+    let doc: any;
+    try {
+      doc = await prisma.requirementsDocument.create({
+        data: {
+          projectId: id,
+          fileName: file.name,
+          fileFormat: fileExt,
+          storageUri: blobUrl,
+          extractedContent: {},
+          extractionConfidence: null,
+          ocrApplied: true,
+          pmConfirmed: false,
+          uploadedById: user.id,
+          docClass,
+          effectiveDate,
+          confidentialityTier,
+          ingestionState: "processing",
+          chunkCount: 0,
+        },
+      });
+    } catch (err: any) {
+      console.error("[requirements upload] DB save failed:", err);
+      return NextResponse.json({ error: "Failed to save document record." }, { status: 500 });
+    }
+
+    // 3. Run DI analysis + chunking synchronously (works on Azure App Service;
+    //    on Vercel this may timeout for very large docs — frontend polls /status if needed)
+    try {
+      const sasUrl = await generateSasUrl(blobUrl, 10);
+      const resultJson = await analyzeDocument(sasUrl);
+      const chunks = diResultToChunks(resultJson);
+
+      // Extract metadata from DI content for extractedContent field
+      const diResult = JSON.parse(resultJson);
+      const fullText = (diResult.content ?? "").slice(0, 15000);
+      let extractedContent: Record<string, unknown> = {};
+      try {
+        const msg = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          system: `You are a PMO AI assistant. Extract structured project information from requirements documents.
+Return ONLY valid JSON: { "projectName": string|null, "objectives": string[], "inScope": string[], "outOfScope": string[], "stakeholders": [{"name":string,"role":string}], "constraints": string[], "assumptions": string[], "acceptanceCriteria": string[], "keyRequirements": string[] }`,
+          messages: [{ role: "user", content: `Project: ${project.name}\n\nDocument content:\n${fullText}` }],
+        });
+        const txt = msg.content[0].type === "text" ? msg.content[0].text : "{}";
+        const fenced = txt.match(/```json\s*([\s\S]*?)\s*```/);
+        extractedContent = JSON.parse(fenced ? fenced[1] : txt);
+      } catch { /* non-fatal */ }
+
+      await prisma.$transaction(async (tx: any) => {
+        await tx.requirementsDocument.update({
+          where: { id: doc.id },
+          data: { ingestionState: "ready", chunkCount: chunks.length, extractedContent: extractedContent as object, extractionConfidence: 0.92 },
+        });
+        if (chunks.length > 0) {
+          await tx.documentChunk.createMany({
+            data: chunks.map((c: any) => ({ id: `${doc.id}-${c.chunkIndex}`, documentId: doc.id, projectId: id, ...c })),
+          });
+        }
+      });
+
+      doc = await prisma.requirementsDocument.findUnique({ where: { id: doc.id } });
+      const readiness = await computeAndSaveReadiness(id).catch(() => ({ score: 0, band: "insufficient" }));
+      return NextResponse.json({ doc, extractedContent, readiness, chunkCount: chunks.length, engine: "azure-di" }, { status: 201 });
+    } catch (err: any) {
+      // DI failed — mark as failed so frontend can show error
+      await prisma.requirementsDocument.update({
+        where: { id: doc.id },
+        data: { ingestionState: "failed" },
+      }).catch(() => {});
+      console.error("[requirements upload] DI processing failed:", err);
+      return NextResponse.json({ error: `Document analysis failed: ${err.message}` }, { status: 500 });
+    }
+  }
+
+  // ── Text-based path (XLSX / TXT / CSV) ───────────────────────────────────
   let rawText: string;
   try {
     rawText = await extractFileText(file);
@@ -193,50 +293,30 @@ export async function POST(
     return NextResponse.json({ error: err.message }, { status: 422 });
   }
 
-  // AI extraction — non-fatal if it fails; document is still saved with empty extraction
   let extractedContent: Record<string, unknown> = {};
   try {
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system: `You are a PMO AI assistant. Extract structured project information from requirements documents.
-Return ONLY valid JSON in this exact shape:
-{
-  "projectName": string | null,
-  "objectives": string[],
-  "inScope": string[],
-  "outOfScope": string[],
-  "stakeholders": [{ "name": string, "role": string }],
-  "constraints": string[],
-  "assumptions": string[],
-  "acceptanceCriteria": string[],
-  "keyRequirements": string[]
-}
-Extract as much detail as possible. Use null/empty arrays for missing sections.`,
-      messages: [{
-        role: "user",
-        content: `Project: ${project.name}\n\nDocument content:\n${rawText.slice(0, 15000)}`,
-      }],
+Return ONLY valid JSON: { "projectName": string|null, "objectives": string[], "inScope": string[], "outOfScope": string[], "stakeholders": [{"name":string,"role":string}], "constraints": string[], "assumptions": string[], "acceptanceCriteria": string[], "keyRequirements": string[] }`,
+      messages: [{ role: "user", content: `Project: ${project.name}\n\nDocument content:\n${rawText.slice(0, 15000)}` }],
     });
     const responseText = message.content[0].type === "text" ? message.content[0].text : "{}";
     const fenced = responseText.match(/```json\s*([\s\S]*?)\s*```/);
     extractedContent = JSON.parse(fenced ? fenced[1] : responseText);
-  } catch {
-    // AI extraction failed — continue with empty metadata; document is still stored and chunked
-  }
+  } catch { /* non-fatal */ }
 
-  // Chunk the raw text
   const chunks = chunkText(rawText);
 
-  // Persist document + chunks in a transaction
   let doc;
   try {
-    doc = await prisma.$transaction(async (tx) => {
+    doc = await prisma.$transaction(async (tx: any) => {
       const created = await tx.requirementsDocument.create({
         data: {
           projectId: id,
           fileName: file.name,
-          fileFormat: file.name.split(".").pop()?.toLowerCase() ?? "unknown",
+          fileFormat: fileExt,
           storageUri: `inline:${id}:${Date.now()}`,
           extractedContent: extractedContent as object,
           extractionConfidence: 0.85,
@@ -249,32 +329,20 @@ Extract as much detail as possible. Use null/empty arrays for missing sections.`
           chunkCount: chunks.length,
         },
       });
-
       if (chunks.length > 0) {
         await tx.documentChunk.createMany({
-          data: chunks.map(c => ({
-            id: `${created.id}-${c.chunkIndex}`,
-            documentId: created.id,
-            projectId: id,
-            ...c,
-          })),
+          data: chunks.map(c => ({ id: `${created.id}-${c.chunkIndex}`, documentId: created.id, projectId: id, ...c })),
         });
       }
-
       return created;
     });
   } catch (err: any) {
     console.error("[requirements upload] DB transaction failed:", err);
-    return NextResponse.json(
-      { error: "Failed to save document. Please try again." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to save document. Please try again." }, { status: 500 });
   }
 
-  // Recompute evidence readiness
   const readiness = await computeAndSaveReadiness(id).catch(() => ({ score: 0, band: "insufficient" }));
-
-  return NextResponse.json({ doc, extractedContent, readiness, chunkCount: chunks.length }, { status: 201 });
+  return NextResponse.json({ doc, extractedContent, readiness, chunkCount: chunks.length, engine: "text" }, { status: 201 });
 }
 
 export async function GET(

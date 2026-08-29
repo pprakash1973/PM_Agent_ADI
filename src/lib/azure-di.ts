@@ -1,8 +1,5 @@
 import { DocumentAnalysisClient, AzureKeyCredential, AnalyzeResult } from "@azure/ai-form-recognizer";
 
-const ENDPOINT = process.env.AZURE_DI_ENDPOINT ?? "";
-const KEY = process.env.AZURE_DI_KEY ?? "";
-
 export interface DiChunk {
   chunkIndex: number;
   pageNumber: number;
@@ -14,8 +11,10 @@ export interface DiChunk {
 }
 
 function getClient() {
-  if (!ENDPOINT || !KEY) throw new Error("Azure DI credentials not configured");
-  return new DocumentAnalysisClient(ENDPOINT, new AzureKeyCredential(KEY));
+  const endpoint = process.env.AZURE_DI_ENDPOINT;
+  const key = process.env.AZURE_DI_KEY;
+  if (!endpoint || !key) throw new Error("Azure DI credentials not configured");
+  return new DocumentAnalysisClient(endpoint, new AzureKeyCredential(key));
 }
 
 export async function analyzeDocument(sasUrl: string): Promise<string> {

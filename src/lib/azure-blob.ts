@@ -1,11 +1,20 @@
 import { BlobServiceClient, StorageSharedKeyCredential, generateBlobSASQueryParameters, BlobSASPermissions } from "@azure/storage-blob";
 
-const CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING ?? "";
-const CONTAINER = process.env.AZURE_STORAGE_CONTAINER ?? "pm-agent-docs";
+function getConnStr(): string {
+  const s = process.env.AZURE_STORAGE_CONNECTION_STRING;
+  if (!s) throw new Error("AZURE_STORAGE_CONNECTION_STRING is not set");
+  if (!s.includes("AccountKey=") && !s.includes("SharedAccessSignature=")) {
+    throw new Error(`AZURE_STORAGE_CONNECTION_STRING malformed (len=${s.length})`);
+  }
+  return s;
+}
 
 function getClient() {
-  if (!CONNECTION_STRING) throw new Error("AZURE_STORAGE_CONNECTION_STRING is not set");
-  return BlobServiceClient.fromConnectionString(CONNECTION_STRING);
+  return BlobServiceClient.fromConnectionString(getConnStr());
+}
+
+function containerName() {
+  return process.env.AZURE_STORAGE_CONTAINER ?? "pm-agent-docs";
 }
 
 export async function uploadToBlob(
@@ -16,7 +25,7 @@ export async function uploadToBlob(
   filename: string
 ): Promise<string> {
   const client = getClient();
-  const containerClient = client.getContainerClient(CONTAINER);
+  const containerClient = client.getContainerClient(containerName());
   await containerClient.createIfNotExists();
 
   const blobName = `${orgId}/${projectId}/${docId}-${filename}`;
@@ -28,14 +37,13 @@ export async function uploadToBlob(
 }
 
 export async function generateSasUrl(blobUrl: string, expiryMinutes = 60): Promise<string> {
-  const client = getClient();
-  // Parse account name + key from connection string
-  const accountName = CONNECTION_STRING.match(/AccountName=([^;]+)/)?.[1];
-  const accountKey = CONNECTION_STRING.match(/AccountKey=([^;]+)/)?.[1];
+  const connStr = getConnStr();
+  const accountName = connStr.match(/AccountName=([^;]+)/)?.[1];
+  const accountKey = connStr.match(/AccountKey=([^;]+)/)?.[1];
   if (!accountName || !accountKey) throw new Error("Cannot parse storage credentials");
 
   const url = new URL(blobUrl);
-  const [, containerName, ...blobParts] = url.pathname.split("/");
+  const [, container, ...blobParts] = url.pathname.split("/");
   const blobName = blobParts.join("/");
 
   const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
@@ -43,7 +51,7 @@ export async function generateSasUrl(blobUrl: string, expiryMinutes = 60): Promi
 
   const sas = generateBlobSASQueryParameters(
     {
-      containerName,
+      containerName: container,
       blobName,
       permissions: BlobSASPermissions.parse("r"),
       expiresOn,
@@ -57,9 +65,9 @@ export async function generateSasUrl(blobUrl: string, expiryMinutes = 60): Promi
 export async function deleteBlob(blobUrl: string): Promise<void> {
   const client = getClient();
   const url = new URL(blobUrl);
-  const [, containerName, ...blobParts] = url.pathname.split("/");
+  const [, container, ...blobParts] = url.pathname.split("/");
   const blobName = blobParts.join("/");
-  const containerClient = client.getContainerClient(containerName);
+  const containerClient = client.getContainerClient(container);
   const blobClient = containerClient.getBlobClient(blobName);
   await blobClient.deleteIfExists();
 }

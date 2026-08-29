@@ -11,6 +11,10 @@ const ENV_VARS: Record<Provider, string> = {
 // 60-second in-process TTL cache
 const _cache = new Map<Provider, { value: string; expiresAt: number }>();
 
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+}
+
 export async function getApiKey(provider: Provider): Promise<string | undefined> {
   const hit = _cache.get(provider);
   if (hit && hit.expiresAt > Date.now()) return hit.value;
@@ -18,14 +22,16 @@ export async function getApiKey(provider: Provider): Promise<string | undefined>
   try {
     const val = await getSystemSetting(`api_key.${provider}`);
     if (val) {
-      _cache.set(provider, { value: val, expiresAt: Date.now() + 60_000 });
-      return val;
+      const clean = stripBom(val);
+      _cache.set(provider, { value: clean, expiresAt: Date.now() + 60_000 });
+      return clean;
     }
   } catch {
     // Fall through to env var
   }
 
-  return process.env[ENV_VARS[provider]];
+  const envVal = process.env[ENV_VARS[provider]];
+  return envVal ? stripBom(envVal) : undefined;
 }
 
 export function invalidateApiKey(provider?: Provider) {

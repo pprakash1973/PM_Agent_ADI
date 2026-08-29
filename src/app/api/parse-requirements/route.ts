@@ -170,8 +170,14 @@ export async function POST(req: NextRequest) {
     // AI handles metadata: goals, stakeholders, constraints, timeline, risks, etc.
     const truncated = cleanedText.slice(0, 100_000);
 
+    // When regex already extracted numbered requirements, the AI only needs to
+    // find metadata (goals, stakeholders, constraints) from the document summary.
+    // Limiting to 30 K chars prevents the response hitting the 8 K token limit
+    // when the BRD contains hundreds of explicitly numbered requirements.
+    const aiInput = hasNumberedReqs ? cleanedText.slice(0, 30_000) : truncated;
+
     const [aiExtracted, projectFields] = await Promise.all([
-      extractRequirements(truncated),
+      extractRequirements(aiInput),
       generateProjectFromNL(truncated),
     ]);
 

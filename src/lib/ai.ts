@@ -107,7 +107,7 @@ export const ARTIFACT_SCHEMA_HINTS: Record<string, string> = {
 // Traceability matrix needs headroom for large requirement sets.
 // Everything else is capped tightly to cut generation time proportionally.
 const ARTIFACT_TOKEN_BUDGET: Record<string, number> = {
-  wbs:                       16000,  // description+acceptanceCriteria removed; output is now ~50% smaller
+  wbs:                       24000,  // 200-page BRDs can produce 300+ work packages; raised from 16K
   traceability_matrix:       16000,  // can have 50+ requirements
   project_charter:           12000,  // many nested arrays (milestones, stakeholders, risks, signatures)
   initiation_deck:           12000,  // RACI + team intro + escalation channels make this large

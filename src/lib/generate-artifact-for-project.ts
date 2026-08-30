@@ -148,9 +148,17 @@ export async function generateArtifactForProject(
     }),
   };
 
-  const requirements = project.requirementsDocs[0]?.extractedContent
+  // Cap requirements JSON to 12K chars. Large BRDs (200+ pages) produce enormous
+  // extractedContent that causes WBS/traceability output to overflow token budgets.
+  // Artifact prompts need scope/goals/stakeholders for structure — not every requirement
+  // verbatim. The 12K window covers ~100 scope items comfortably.
+  const MAX_REQ_CHARS = 12_000;
+  const rawRequirements = project.requirementsDocs[0]?.extractedContent
     ? JSON.stringify(project.requirementsDocs[0].extractedContent)
     : undefined;
+  const requirements = rawRequirements && rawRequirements.length > MAX_REQ_CHARS
+    ? rawRequirements.slice(0, MAX_REQ_CHARS) + "\n... [truncated for brevity]"
+    : rawRequirements;
 
   // Resolve active template for this project's account + artifact type
   const templateOverride = await resolveTemplate(

@@ -56,7 +56,7 @@ const ARTIFACT_SEARCH_TERMS: Record<string, string[]> = {
   traceability_matrix:  ["requirements traceability WBS milestone acceptance criteria validation"],
 };
 
-const TOP_K = 12; // max chunks to assemble per artifact generation
+const TOP_K = 20; // max chunks per artifact generation — raised from 12 for large BRDs
 
 /**
  * Assemble evidence for a given artifact type from a project's document store.

@@ -9,6 +9,7 @@ import { runGuardrails, GuardrailError } from "@/lib/guardrails";
 import { syncArtifactToTables } from "@/lib/artifact-sync";
 import { hashArtifactContent } from "@/lib/artifact-hash";
 import { extractAndStoreItems } from "@/lib/item-extractor";
+import { assembleEvidence } from "@/lib/evidence-assembler";
 
 // Cap large array fields in extractedContent so artifact prompts don't receive
 // hundreds of scope items and produce output that overflows token budgets.
@@ -175,16 +176,34 @@ export async function generateArtifactForProject(
     ? JSON.stringify(capRequirementsContent(rawExtracted as Record<string, unknown>))
     : undefined;
 
-  // Resolve active template for this project's account + artifact type
-  const templateOverride = await resolveTemplate(
-    (project as any).orgId,
-    (project as any).accountId,
-    artifactType
-  );
+  // Resolve template + assemble chunk evidence in parallel
+  const [templateOverride, evidenceContext] = await Promise.all([
+    resolveTemplate(
+      (project as any).orgId,
+      (project as any).accountId,
+      artifactType
+    ),
+    // Retrieve relevant DocumentChunks via full-text search.
+    // Falls back gracefully (hasEvidence=false) when no chunks exist (SQLite dev,
+    // projects created before Azure DI, or FTS query errors).
+    assembleEvidence(projectId, artifactType).catch(() => ({
+      chunks: [], totalChunksInProject: 0, queryTerms: [], hasEvidence: false,
+    })),
+  ]);
 
+  // When chunks are available they are the primary source of truth — the AI prompt
+  // instructs Claude to ground facts in SOURCE DOCUMENTS and mark missing fields as
+  // GAP. The capped requirementsExtracted JSON is kept as fallback for projects
+  // that have no DocumentChunk records yet.
   let content: any;
   try {
-    content = await generateArtifact(artifactType, projectContext, requirements, undefined, templateOverride);
+    content = await generateArtifact(
+      artifactType,
+      projectContext,
+      requirements,
+      evidenceContext,
+      templateOverride,
+    );
   } catch (err: any) {
     return { error: err.message ?? "AI generation failed" };
   }

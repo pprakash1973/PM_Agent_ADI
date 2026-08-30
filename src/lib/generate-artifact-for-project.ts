@@ -10,6 +10,23 @@ import { syncArtifactToTables } from "@/lib/artifact-sync";
 import { hashArtifactContent } from "@/lib/artifact-hash";
 import { extractAndStoreItems } from "@/lib/item-extractor";
 
+// Cap large array fields in extractedContent so artifact prompts don't receive
+// hundreds of scope items and produce output that overflows token budgets.
+function capRequirementsContent(content: Record<string, unknown>): Record<string, unknown> {
+  const cap = (arr: unknown, limit: number) =>
+    Array.isArray(arr) ? arr.slice(0, limit) : arr;
+  return {
+    ...content,
+    scopeItems:   cap(content.scopeItems,   60),
+    goals:        cap(content.goals,        20),
+    stakeholders: cap(content.stakeholders, 20),
+    constraints:  cap(content.constraints,  20),
+    assumptions:  cap(content.assumptions,  20),
+    risks:        cap(content.risks,        20),
+  };
+}
+
+
 async function resolveTemplate(orgId: string, accountId: string | null | undefined, artifactType: string): Promise<ArtifactTemplateOverride | undefined> {
   const db = prisma as any;
 
@@ -148,17 +165,15 @@ export async function generateArtifactForProject(
     }),
   };
 
-  // Cap requirements JSON to 12K chars. Large BRDs (200+ pages) produce enormous
-  // extractedContent that causes WBS/traceability output to overflow token budgets.
-  // Artifact prompts need scope/goals/stakeholders for structure — not every requirement
-  // verbatim. The 12K window covers ~100 scope items comfortably.
-  const MAX_REQ_CHARS = 12_000;
-  const rawRequirements = project.requirementsDocs[0]?.extractedContent
-    ? JSON.stringify(project.requirementsDocs[0].extractedContent)
+  // Large BRDs (200+ pages) produce extractedContent with 500+ scopeItems.
+  // Sending all of them causes artifacts like WBS to enumerate every item as a
+  // work package and overflow the output token budget.
+  // Cap scopeItems to 60 (enough for WBS structure) and other arrays to 30;
+  // keep all other fields intact so goals/stakeholders/constraints pass through.
+  const rawExtracted = project.requirementsDocs[0]?.extractedContent;
+  const requirements = rawExtracted
+    ? JSON.stringify(capRequirementsContent(rawExtracted as Record<string, unknown>))
     : undefined;
-  const requirements = rawRequirements && rawRequirements.length > MAX_REQ_CHARS
-    ? rawRequirements.slice(0, MAX_REQ_CHARS) + "\n... [truncated for brevity]"
-    : rawRequirements;
 
   // Resolve active template for this project's account + artifact type
   const templateOverride = await resolveTemplate(
